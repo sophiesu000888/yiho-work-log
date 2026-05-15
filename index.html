@@ -912,14 +912,25 @@ let currentUid = null;
 
 // ── 舊資料搬移（只針對原始單一使用者 uid）────────────────
 const LEGACY_UID = 'Uht2D9As72duSMJgitzoCgiHwuU2';
-const MIGRATION_DONE_KEY = 'migration_done_v1';
+
+function userDocRef(uid){ return doc(db, 'users', uid); }
 
 async function migrateIfNeeded(uid){
-  // 只對原始帳號執行一次
+  // 只對原始帳號執行
   if(uid !== LEGACY_UID) return;
-  if(localStorage.getItem(MIGRATION_DONE_KEY)) return;
 
   try{
+    // 優先從 Firestore 讀取搬移 flag（換裝置也有效）
+    const userSnap = await getDoc(userDocRef(uid));
+    if(userSnap.exists() && userSnap.data().migrationDone) return;
+
+    // 舊版 localStorage flag 也接受（同裝置升級時沿用）
+    if(localStorage.getItem('migration_done_v1')) {
+      // 順手把 flag 補寫到 Firestore，之後換裝置就不會再重複搬移
+      await setDoc(userDocRef(uid), {migrationDone: true}, {merge: true});
+      return;
+    }
+
     showSpecialMsg('資料搬移中…請稍候');
     // 讀取舊路徑 workdata/* 的所有月份
     const oldCol = collection(db, 'workdata');
@@ -931,11 +942,16 @@ async function migrateIfNeeded(uid){
       if(mk === 'kengle') continue;
       const days = docSnap.data().days;
       if(!days) continue;
-      // 寫入新路徑
-      await setDoc(monthDocRef(uid, mk), {days, updatedAt: Date.now()});
-      migrated++;
+      // 只寫入新路徑中不存在的月份，避免覆蓋已有的新資料
+      const newSnap = await getDoc(monthDocRef(uid, mk));
+      if(!newSnap.exists()){
+        await setDoc(monthDocRef(uid, mk), {days, updatedAt: Date.now()});
+        migrated++;
+      }
     }
-    localStorage.setItem(MIGRATION_DONE_KEY, '1');
+    // 搬移完成，把 flag 寫到 Firestore（換裝置不會重複執行）
+    await setDoc(userDocRef(uid), {migrationDone: true}, {merge: true});
+    localStorage.setItem('migration_done_v1', '1'); // 相容舊版
     if(migrated > 0) showSpecialMsg(`✓ 已搬移 ${migrated} 個月的資料`);
   }catch(e){
     console.warn('Migration failed', e);
